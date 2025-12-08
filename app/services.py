@@ -10,13 +10,11 @@ def execute_transfer(db: Session, from_account_id: int, to_account_id: int, amou
     ).first()
     
     if existing_tx:
-        return {"status": "idempotent_success", "message": "Transaction already processed"}
+        return {"status": "SKIPPED", "message": "Transaction already processed"}
 
-    # 2. Lock Accounts (Prevent Race Conditions)
-    # Always sort IDs to avoid Deadlocks
+    # 2. Lock Accounts (Sort IDs to prevent Deadlocks)
     first_id, second_id = sorted([from_account_id, to_account_id])
     
-    # "with_for_update" tells Postgres to lock these rows
     a1 = db.query(models.Account).with_for_update().filter(models.Account.id == first_id).first()
     a2 = db.query(models.Account).with_for_update().filter(models.Account.id == second_id).first()
 
@@ -34,6 +32,10 @@ def execute_transfer(db: Session, from_account_id: int, to_account_id: int, amou
     sender.balance -= amount
     receiver.balance += amount
 
+    # Force DB to track updates
+    db.add(sender)
+    db.add(receiver)
+
     # 5. Audit Trail (Double Entry)
     debit = models.Transaction(
         account_id=sender.id, amount=-amount, transaction_type="TRANSFER_OUT", idempotency_key=f"{idempotency_key}_db"
@@ -41,8 +43,6 @@ def execute_transfer(db: Session, from_account_id: int, to_account_id: int, amou
     credit = models.Transaction(
         account_id=receiver.id, amount=amount, transaction_type="TRANSFER_IN", idempotency_key=f"{idempotency_key}_cr"
     )
-    
-    # Store the main key too so we catch retries
     main_record = models.Transaction(
         account_id=sender.id, amount=0, transaction_type="TRANSFER_LOG", idempotency_key=idempotency_key
     )
@@ -52,5 +52,6 @@ def execute_transfer(db: Session, from_account_id: int, to_account_id: int, amou
     db.add(main_record)
     
     db.commit()
+    db.refresh(sender)
     
     return {"status": "success", "sender_new_balance": sender.balance}

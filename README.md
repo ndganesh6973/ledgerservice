@@ -1,100 +1,171 @@
 # Transactional Ledger Service
 
-## 1. Overview
-A high-integrity financial ledger system designed to handle money movements between accounts with strict guarantees against double-spending and overdrafts. Built with **Python (FastAPI)** and **PostgreSQL**.
+> A robust internal financial ledger system ensuring high accuracy and consistency under concurrent and failure scenarios.
 
 ---
 
-## 2. Architecture & Design Decisions
+## Project Overview
 
-### 🧠 Database Choice: Why PostgreSQL?
-I selected **PostgreSQL** (Relational) over MongoDB (NoSQL) because financial systems require strict **ACID guarantees**.
-* **Atomicity:** A transfer involves two writes (Debit Sender, Credit Receiver). If one fails, the entire transaction must roll back. PostgreSQL handles this natively.
-* **Consistency:** I utilized `CheckConstraints` (`CHECK (balance >= 0)`) at the database level. This ensures that even if the application logic fails, the database engine itself rejects any transaction that causes an overdraft.
-* **Locking Support:** PostgreSQL provides robust row-level locking (`SELECT FOR UPDATE`), which is critical for the concurrency requirements.
+This service handles money movement between accounts, supporting:
 
-### 📚 Schema Design: Double-Entry Bookkeeping
-To meet the requirements of a "Real Ledger," I implemented a **Hybrid Approach**:
-1.  **`accounts` Table:** Stores the current mutable `balance`. This allows for O(1) read performance and serves as the primary row for locking.
-2.  **`transactions` Table:** Acts as an immutable ledger. Every money movement records a specific transaction row (Deposit, Withdrawal, Transfer).
-    * *Auditability:* The history endpoint reconstructs the flow of funds by querying this table.
+- Account creation with zero initial balance
+- Deposits and withdrawals with overdraft protection (no negative balances)
+- Atomic internal transfers between accounts
+- Retrieval of current balance and full transaction history
 
-### 🛡️ Concurrency Strategy: Preventing Double-Spending
-To handle race conditions (e.g., 10 simultaneous requests trying to withdraw funds), I implemented **Pessimistic Locking**.
-* **Mechanism:** When a transfer initiates, the system executes `SELECT ... FOR UPDATE` on both the Sender and Receiver rows.
-* **Result:** The database locks these specific rows. Any other incoming request trying to modify these accounts is forced to wait until the first transaction commits.
-* **Deadlock Prevention:** To avoid deadlocks, accounts are always locked in a consistent order (lowest ID first).
-
-### 🔄 Idempotency
-To handle network retries safely, the `transactions` table enforces a **Unique Constraint** on the `(account_id, idempotency_key)` pair. Duplicate requests are caught by the database and handled gracefully without re-processing funds.
+Built using Python (FastAPI), PostgreSQL, SQLAlchemy, and Docker.
 
 ---
 
-## 3. Scaling Trade-offs (The "1 Million TPS" Question)
-The current design prioritizes **Safety/Consistency** over **Throughput**. The `SELECT FOR UPDATE` lock creates a bottleneck because transactions on the same account must process sequentially.
+## Features
 
-**To scale this to 1 Million Transactions Per Second (TPS), I would:**
-1.  **Database Sharding:** Partition the PostgreSQL database by `account_id` to spread the locking load across multiple physical servers.
-2.  **Async Processing (CQRS):** Instead of processing transfers synchronously, the API would push requests to a high-throughput message queue (e.g., **Kafka**). Workers would process the ledger updates at a steady pace.
-3.  **Distributed Ledger:** Move the immutable transaction history to a distributed datastore (like **Cassandra** or **DynamoDB**) optimized for write-heavy workloads, keeping only the "hot" balance in Postgres/Redis.
+### Account Creation
+- Initializes accounts with a zero balance
+- Supported currencies: USD, INR
+
+### Deposit & Withdrawal
+- Perform credit and debit operations safely
+- Overdraft protection enforced by database constraints
+
+### Internal Transfers
+- Atomic debit and credit across accounts
+- Ensures no partial transfers on failures
+
+### Balance & Transaction History Retrieval
+- Get current balance
+- Fetch full, immutable transaction history for auditing
 
 ---
 
-## 4. How to Run Locally
+## Technology Stack
 
-### Prerequisites
-* Python 3.10+
-* PostgreSQL (Local)
-* Git
+- **Backend:** Python (FastAPI)  
+- **Database:** PostgreSQL  
+- **ORM:** SQLAlchemy  
+- **Validation:** Pydantic  
+- **Containerization:** Docker, Docker Compose  
 
-### Installation
-1.  Clone the repository:
-    ```bash
-    git clone <https://github.com/ndganesh6973/ledgerservice.git>
-    cd ledger-service
-    ```
-2.  Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
+---
 
-### Configuration & Start
-Set your database connection string and start the server.
+## Database Design
 
-**Windows (PowerShell):**
-```powershell
-$env:DATABASE_URL="postgresql://postgres:password@localhost:5432/ledger_db"; uvicorn app.main:app --reload
+PostgreSQL was chosen for its robust ACID guarantees required in financial systems:
 
-Mac/Linux:
-DATABASE_URL="postgresql://postgres:password@localhost:5432/ledger_db" uvicorn app.main:app --reload
+- **Atomicity:** Transfers handled in single DB transactions  
+- **Consistency:** Constraints prevent overdrafts  
+- **Isolation:** Pessimistic locking (`SELECT FOR UPDATE`) prevents race conditions  
+- **Durability:** Data safely persisted after commit  
 
-The API will be available at: http://127.0.0.1:8000/docs
+### Schema Overview
+- `accounts`: stores live balances and supports row locking  
+- `transactions`: immutable ledger for deposits, withdrawals, and transfers  
 
-5. Testing (Concurrency Proof)
-To verify that the locking strategy works, run the integration test script. This fires 10 simultaneous transfer requests to prove that balances remain accurate.
-python tests/test_concurrency.py
-Expected Output:
-Results: 5 Successes, 5 Failures
-Alice Final Balance: $0.00
-Bob Final Balance:   $100.00
-✅ TEST PASSED
-6. API Reference (cURL Commands)
-1. Create Account
+This implements a Hybrid Double-Entry Bookkeeping model.
 
-curl -X 'POST' \
-  '[http://127.0.0.1:8000/accounts/](http://127.0.0.1:8000/accounts/)' \
-  -H 'Content-Type: application/json' \
-  -d '{"owner": "Alice", "currency": "USD"}'
-2. Deposit Funds
+---
 
-curl -X 'POST' \
-  '[http://127.0.0.1:8000/deposit/](http://127.0.0.1:8000/deposit/)' \
-  -H 'Content-Type: application/json' \
-  -d '{"account_id": 1, "amount": 100, "type": "DEPOSIT", "idempotency_key": "dep_unique_1"}'
-3. Transfer Funds
-curl -X 'POST' \
-  '[http://127.0.0.1:8000/transfer/](http://127.0.0.1:8000/transfer/)' \
-  -H 'Content-Type: application/json' \
-  -d '{"from_account_id": 1, "to_account_id": 2, "amount": 20, "idempotency_key": "transfer_unique_1"}'
-4. View History
-curl -X 'GET' '[http://127.0.0.1:8000/accounts/1/history](http://127.0.0.1:8000/accounts/1/hist
+## Concurrency & Idempotency
+
+### Concurrency Control
+
+- Pessimistic locking on accounts to serialize access  
+- Locks acquired in ascending account ID order to prevent deadlocks
+
+### Idempotency
+
+- Unique `(account_id, idempotency_key)` constraint avoids duplicated requests  
+- Duplicate requests return original results without reprocessing funds
+
+---
+
+## Testing Concurrency
+
+Run:
+- python tests/test_concurrency.py
+
+
+Confirms:
+
+- No overdrafts or double spending  
+- Accurate balances under heavy concurrent load
+
+---
+
+## Running the Project
+
+### Option A: Using Docker (Recommended)
+
+**Prerequisites:** 
+- Docker and Docker Compose
+- git clone https://github.com/ndganesh6973/ledgerservice.git
+- cd ledgerservice
+- docker-compose up --build
+
+Browse API docs at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+
+---
+
+### Option B: Local Setup
+
+**Prerequisites:** Python 3.10+, PostgreSQL, Git
+- git clone https://github.com/ndganesh6973/ledgerservice.git
+- cd ledgerservice
+- python -m venv venv
+- source venv/bin/activate # Windows: venv\Scripts\activate
+- pip install -r requirements.txt
+
+**Create DB manually in PostgreSQL:**
+- CREATE DATABASE ledger_db;
+
+- Set environment variable
+- export DATABASE_URL="postgresql://postgres:password@localhost:5432/ledger_db"
+
+- PS: $env:DATABASE_URL="postgresql://postgres:password@localhost:5432/ledger_db"
+- uvicorn app.main:app --reload
+
+---
+
+## Example API Calls
+
+- Create Account:
+curl -X POST http://127.0.0.1:8000/accounts/
+- H "Content-Type: application/json"
+- d '{"owner":"Alice","currency":"USD"}'
+
+- Deposit:
+curl -X POST http://127.0.0.1:8000/deposit/
+- H "Content-Type: application/json"
+- d '{"account_id":1,"amount":100,"type":"DEPOSIT","idempotency_key":"dep1"}'
+
+- Transfer:
+curl -X POST http://127.0.0.1:8000/transfer/
+- H "Content-Type: application/json"
+- d '{"from_account_id":1,"to_account_id":2,"amount":50,"idempotency_key":"tx1"}'
+
+- Transaction History:
+curl -X GET http://127.0.0.1:8000/accounts/1/history
+
+---
+
+## Scaling Considerations
+
+Current design prioritizes:
+
+- Data Integrity  
+- Financial Safety  
+- Strong Consistency  
+
+To scale for millions TPS:
+
+- Database sharding by account  
+- Kafka-based async CQRS processing  
+- Redis caching for hot balances  
+- Use Cassandra or DynamoDB for ledger history storage
+
+[Repository Link](https://github.com/ndganesh6973/ledgerservice)
+
+
+
+
+
+

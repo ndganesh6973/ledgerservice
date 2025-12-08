@@ -1,9 +1,10 @@
 from pydantic import BaseModel, validator
-from typing import Optional, List
+from typing import Optional
 from decimal import Decimal
 from datetime import datetime
 
 # --- INPUTS ---
+
 class AccountBase(BaseModel):
     owner: str
     currency: str
@@ -18,7 +19,7 @@ class AccountCreate(AccountBase):
 class TransactionCreate(BaseModel):
     account_id: int
     amount: Decimal
-    type: str 
+    # Removed 'type' because main.py sets it automatically (DEPOSIT/WITHDRAWAL)
     idempotency_key: str
 
 class TransferCreate(BaseModel):
@@ -28,9 +29,11 @@ class TransferCreate(BaseModel):
     idempotency_key: str
 
 # --- OUTPUTS ---
+
 class AccountResponse(AccountBase):
     id: int
     balance: Decimal
+    
     class Config:
         from_attributes = True
 

@@ -4,7 +4,6 @@ from typing import List
 from . import models, schemas, database, services
 from scalar_fastapi import get_scalar_api_reference
 
-# Create tables on startup
 models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI(
@@ -14,12 +13,11 @@ app = FastAPI(
     
     ## Features
     * **Accounts**: Create and manage USD/INR accounts.
-    * **Deposits**: Add funds securely.
+    * **Deposit/Withdraw**: Add or remove funds securely.
     * **Transfers**: Atomic money movement between users.
     * **History**: Full audit trail of transactions.
     """,
     version="1.0.0",
-    # This turns the code blocks dark (Obsidian theme)
     swagger_ui_parameters={"syntaxHighlight.theme": "obsidian"}
 )
 
@@ -44,21 +42,47 @@ def get_balance(account_id: int, db: Session = Depends(database.get_db)):
 
 @app.post("/deposit/")
 def deposit_funds(transaction: schemas.TransactionCreate, db: Session = Depends(database.get_db)):
-    # Simple deposit logic
     account = db.query(models.Account).with_for_update().filter(models.Account.id == transaction.account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
         
     account.balance += transaction.amount
-    # Log it
+    
     entry = models.Transaction(
         account_id=account.id, 
         amount=transaction.amount, 
         transaction_type="DEPOSIT", 
         idempotency_key=transaction.idempotency_key
     )
+    
     db.add(entry)
+    db.add(account) 
     db.commit()
+    db.refresh(account) 
+    return {"status": "success", "new_balance": account.balance}
+
+@app.post("/withdraw/")
+def withdraw_funds(transaction: schemas.TransactionCreate, db: Session = Depends(database.get_db)):
+    account = db.query(models.Account).with_for_update().filter(models.Account.id == transaction.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if account.balance < transaction.amount:
+        raise HTTPException(status_code=400, detail="Insufficient funds")
+        
+    account.balance -= transaction.amount
+    
+    entry = models.Transaction(
+        account_id=account.id, 
+        amount=-transaction.amount,
+        transaction_type="WITHDRAWAL", 
+        idempotency_key=transaction.idempotency_key
+    )
+    
+    db.add(entry)
+    db.add(account)
+    db.commit()
+    db.refresh(account)
     return {"status": "success", "new_balance": account.balance}
 
 @app.post("/transfer/")
@@ -73,6 +97,7 @@ def get_history(account_id: int, skip: int = 0, limit: int = 10, db: Session = D
         .filter(models.Transaction.account_id == account_id)\
         .order_by(models.Transaction.created_at.desc())\
         .offset(skip).limit(limit).all()
+
 @app.get("/scalar", include_in_schema=False)
 async def scalar_html():
     return get_scalar_api_reference(

@@ -1,21 +1,27 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from ..database import AsyncSessionLocal
-from .. import crud, schemas
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from .. import database, models, schemas
+
 
 router = APIRouter()
 
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        yield session
+@router.post("/", response_model=schemas.AccountResponse)
+def create_account(account: schemas.AccountCreate, db: Session = Depends(database.get_db)):
+ 
+    db_account = models.Account(owner=account.owner, currency=account.currency, balance=0.00)
+    
+    # Add to DB
+    db.add(db_account)
+    db.commit()
+    db.refresh(db_account)
+    
+    return db_account
 
-@router.post("/", response_model=schemas.AccountOut)
-async def create_account(payload: schemas.AccountCreate, db: AsyncSession = Depends(get_db)):
-    acc = await crud.create_account(db, payload.currency)
-    await db.commit()
-    return acc
-
-@router.get("/{id}/balance")
-async def balance(id: int, db: AsyncSession = Depends(get_db)):
-    bal = await crud.get_balance(db, id)
-    return {"balance": float(bal)}
+@router.get("/{account_id}/balance")
+def get_balance(account_id: int, db: Session = Depends(database.get_db)):
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    return {"balance": account.balance}

@@ -1,11 +1,7 @@
 fastapi
-uvicorn[standard]
-SQLAlchemy==2.1.0
-asyncpg
+uvicorn
+sqlalchemy
 psycopg2-binary
 pydantic
-alembic
-pytest
-httpx
-pytest-asyncio
-python-dotenv
+requests
+scalar-fastapi

@@ -6,9 +6,7 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    # THIS LINE WAS LIKELY MISSING OR MISSPELLED:
-    owner = Column(String, nullable=False) 
-    # -------------------------------------------
+    owner = Column(String, nullable=False)
     balance = Column(Numeric(12, 2), default=0.00, nullable=False)
     currency = Column(String(3), nullable=False)
 
